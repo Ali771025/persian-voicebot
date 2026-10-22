@@ -1,0 +1,46 @@
+services:
+  voicebot:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - WHISPER_LANG=fa
+      - WHISPER_THREADS=6
+      - MEDIA_DIR=/data/media
+      # - PUBLIC_BASE_URL=http://localhost:8000
+
+      - TTS_FEMALE_CONFIG=/models/tts/fa_female/config.json
+      - TTS_FEMALE_MODEL=/models/tts/fa_female/model.pth
+      - TTS_MALE_CONFIG=/models/tts/fa_male/config.json
+      - TTS_MALE_MODEL=/models/tts/fa_male/model.pth
+      - TTS_USE_CUDA=0
+
+      - OLLAMA_HOST=http://ollama:11434
+      - OLLAMA_MODEL=qwen2.5:7b-instruct
+    volumes:
+      - ./data/media:/data/media
+      - ./models:/models
+    depends_on:
+      - ollama
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./data/ollama:/root/.ollama
+
+  n8n:
+    image: n8nio/n8n:latest
+    ports:
+      - "5678:5678"
+    environment:
+      - WEBHOOK_URL=http://localhost:5678/
+      - N8N_EDITOR_BASE_URL=http://localhost:5678/
+      - N8N_DEFAULT_BINARY_DATA_MODE=filesystem
+      - N8N_BINARY_DATA_STORAGE_PATH=/home/node/.n8n/binary_data
+      - N8N_PAYLOAD_SIZE_MAX=200
+    volumes:
+      - ./data/n8n:/home/node/.n8n
+    depends_on:
+      - voicebot

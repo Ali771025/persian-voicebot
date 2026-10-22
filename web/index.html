@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="fa">
+<head>
+  <meta charset="utf-8"/>
+  <title>Local Voice Chat (MSE)</title>
+  <style>
+    body{font-family:tahoma; max-width:980px; margin:20px auto}
+    button, select, input{padding:10px 14px; margin:6px}
+    #log{white-space:pre-wrap; border:1px solid #ddd; padding:12px; border-radius:12px; min-height:240px}
+    .row{display:flex; gap:10px; flex-wrap:wrap; align-items:center}
+    .pill{padding:6px 10px; border:1px solid #ddd; border-radius:999px; font-size:12px}
+    audio{width:100%; margin-top:10px}
+  </style>
+</head>
+<body>
+  <h3>مکالمه صوتی لوکال — پخش روان با MediaSource (بدون decodeAudioData)</h3>
+
+  <div class="row">
+    <span class="pill">WS: <code id="wsurl">ws://127.0.0.1:8000/ws/voice</code></span>
+    <span class="pill">Input chunk: 500ms (MediaRecorder)</span>
+    <span class="pill">Output: WebM/Opus via MSE</span>
+    <span class="pill">Final: WAV</span>
+  </div>
+
+  <div class="row">
+    <label>session_id:</label>
+    <input id="sid" value="default"/>
+    <label>voice:</label>
+    <select id="voice">
+      <option value="female">زن</option>
+      <option value="male">مرد</option>
+    </select>
+    <label><input type="checkbox" id="autostop"/> auto-stop (VAD)</label>
+  </div>
+
+  <div class="row">
+    <button id="start">🎤 شروع</button>
+    <button id="stop" disabled>⏹ پایان</button>
+    <button id="cancel">✋ قطع پاسخ</button>
+  </div>
+
+  <div class="row">
+    <input id="text" style="flex:1" placeholder="پیام متنی بفرست..."/>
+    <button id="send">ارسال متن</button>
+  </div>
+
+  <audio id="player" controls></audio>
+
+  <h4>متن گفتگو</h4>
+  <div id="log"></div>
+
+<script>
+let ws, rec, stream;
+const log = document.getElementById("log");
+const startBtn = document.getElementById("start");
+const stopBtn = document.getElementById("stop");
+const cancelBtn = document.getElementById("cancel");
+const sendBtn = document.getElementById("send");
+const textInp = document.getElementById("text");
+const sidInp = document.getElementById("sid");
+const voiceSel = document.getElementById("voice");
+const autoStopChk = document.getElementById("autostop");
+const player = document.getElementById("player");
+
+const WS_URL = document.getElementById("wsurl").textContent.trim();
+
+// ---- MSE pipeline ----
+let mediaSource = null;
+let sourceBuffer = null;
+let appendQueue = [];
+let mseReady = false;
+let expectingBinaryFor = null;
+let audioMime = 'audio/webm; codecs="opus"';
+
+function add(s){
+  log.textContent += s;
+  log.scrollTop = log.scrollHeight;
+}
+
+function resetMSE(){
+  mseReady = false;
+  appendQueue = [];
+  expectingBinaryFor = null;
+
+  try { player.pause(); } catch(e) {}
+  player.removeAttribute("src");
+  player.load();
+
+  if (!("MediaSource" in window)) {
+    add("\\n❌ MediaSource در این مرورگر پشتیبانی نمی‌شود.\\n");
+    return;
+  }
+
+  mediaSource = new MediaSource();
+  player.src = URL.createObjectURL(mediaSource);
+
+  mediaSource.addEventListener("sourceopen", () => {
+    if (!MediaSource.isTypeSupported(audioMime)) {
+      add("\\n❌ این mime پشتیبانی نمی‌شود: " + audioMime + "\\n");
+      return;
+    }
+    sourceBuffer = mediaSource.addSourceBuffer(audioMime);
+
+    // برای پخش پشت هم حتی با timestamps گسسته
+    sourceBuffer.mode = "sequence";
+
+    sourceBuffer.addEventListener("updateend", () => {
+      pumpQueue();
+    });
+
+    mseReady = true;
+    pumpQueue();
+  }, {once:true});
+}
+
+function pumpQueue(){
+  if (!mseReady || !sourceBuffer || sourceBuffer.updating) return;
+  if (appendQueue.length === 0) return;
+
+  const u8 = appendQueue.shift();
+  try {
+    sourceBuffer.appendBuffer(u8);
+    if (player.paused) player.play().catch(()=>{});
+  } catch (e) {
+    console.error("appendBuffer failed", e);
+  }
+}
+
+function enqueueArrayBuffer(ab){
+  appendQueue.push(new Uint8Array(ab));
+  pumpQueue();
+}
+
+// ---- WS ----
+function connectWS(){
+  ws = new WebSocket(WS_URL);
+  ws.binaryType = "arraybuffer";
+
+  ws.onopen = () => add("✅ connected\\n");
+  ws.onclose = () => add("\\n⚠️ disconnected\\n");
+
+  ws.onmessage = (ev) => {
+    if (typeof ev.data === "string") {
+      const msg = JSON.parse(ev.data);
+
+      if (msg.type === "assistant.start") {
+        resetMSE();
+        add("\\n🤖 دستیار: ");
+      }
+
+      if (msg.type === "assistant.interrupted") {
+        add("\\n\\n⛔ پاسخ قطع شد (" + msg.reason + ")\\n");
+        resetMSE();
+      }
+
+      if (msg.type === "ack.start") add("\\n🎙 شروع ضبط ("+msg.session_id+")\\n");
+      if (msg.type === "vad.auto_stop") add("\\n🤫 سکوت → توقف خودکار\\n");
+      if (msg.type === "stt.final") add("\\n👤 شما: " + msg.text + "\\n");
+      if (msg.type === "llm.delta") add(msg.delta);
+      if (msg.type === "assistant.done") add("\\n\\n✅ پایان پاسخ\\n");
+
+      if (msg.type === "audio.init") {
+        audioMime = msg.mime || audioMime;
+        expectingBinaryFor = "audio.init";
+      }
+      if (msg.type === "audio.mse") {
+        expectingBinaryFor = "audio.mse";
+      }
+      if (msg.type === "audio.final") {
+        expectingBinaryFor = "audio.final";
+      }
+
+      if (msg.type === "warn") add("\\n⚠️ WARN: " + msg.message + "\\n");
+      if (msg.type === "error") add("\\n❌ ERROR: " + msg.message + "\\n");
+      return;
+    }
+
+    // binary
+    if (expectingBinaryFor === "audio.init") {
+      enqueueArrayBuffer(ev.data);
+      expectingBinaryFor = null;
+    } else if (expectingBinaryFor === "audio.mse") {
+      enqueueArrayBuffer(ev.data);
+      expectingBinaryFor = null;
+    } else if (expectingBinaryFor === "audio.final") {
+      const blob = new Blob([ev.data], {type:"audio/wav"});
+      const url = URL.createObjectURL(blob);
+      add("\\n🔊 WAV نهایی: " + url + "\\n");
+      expectingBinaryFor = null;
+    }
+  };
+}
+
+connectWS();
+
+startBtn.onclick = async () => {
+  if (!ws || ws.readyState !== 1) connectWS();
+
+  stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+  ws.send(JSON.stringify({
+    type:"start",
+    session_id: sidInp.value || "default",
+    auto_stop: autoStopChk.checked,
+    audio_mode: "mse",
+  }));
+
+  rec = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" });
+  rec.ondataavailable = async (e) => {
+    if (e.data.size > 0 && ws.readyState === 1) {
+      ws.send(await e.data.arrayBuffer());
+    }
+  };
+  rec.start(500);
+
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+};
+
+stopBtn.onclick = () => {
+  rec.stop();
+  stream.getTracks().forEach(t => t.stop());
+
+  ws.send(JSON.stringify({
+    type:"stop",
+    voice: voiceSel.value,
+    audio_mode: "mse",
+  }));
+
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+};
+
+cancelBtn.onclick = () => {
+  ws.send(JSON.stringify({type:"cancel"}));
+  add("\\n✋ پاسخ قطع شد\\n");
+};
+
+sendBtn.onclick = () => {
+  const txt = (textInp.value || "").trim();
+  if (!txt) return;
+
+  ws.send(JSON.stringify({
+    type:"text",
+    session_id: sidInp.value || "default",
+    voice: voiceSel.value,
+    text: txt,
+    audio_mode: "mse",
+  }));
+
+  textInp.value = "";
+};
+
+textInp.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") sendBtn.click();
+});
+</script>
+</body>
+</html>

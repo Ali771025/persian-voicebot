@@ -1,0 +1,379 @@
+{
+  "name": "ChatBot Voice (n8n + STT + Ollama + optional TTS)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "voice",
+        "responseMode": "responseNode",
+        "options": {
+          "binaryData": true
+        }
+      },
+      "id": "portfolio-node-1",
+      "name": "Webhook Voice",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        240,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "string": [
+            {
+              "name": "session_id",
+              "value": "={{$json.body.session_id || 'default'}}"
+            },
+            {
+              "name": "voice",
+              "value": "={{$json.body.voice || 'female'}}"
+            }
+          ],
+          "boolean": [
+            {
+              "name": "want_audio",
+              "value": "={{$json.body.want_audio === true}}"
+            }
+          ]
+        }
+      },
+      "id": "portfolio-node-2",
+      "name": "Normalize Voice",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        460,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://voicebot:8000/api/stt",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "sendBinaryData": true,
+        "binaryPropertyName": "data",
+        "options": {
+          "timeout": 120000
+        },
+        "responseFormat": "json"
+      },
+      "id": "portfolio-node-3",
+      "name": "STT (Whisper.cpp)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        680,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst data = this.getWorkflowStaticData('global');\nif (!data.sessions) data.sessions = {};\n\nconst prev = $input.first().json;\nconst session_id = prev.session_id || 'default';\nconst voice = prev.voice || 'female';\nconst want_audio = !!prev.want_audio;\n\nconst text = ($json.text || '').trim();\n\nif (!data.sessions[session_id]) {\n  data.sessions[session_id] = [\n    { role: 'system', content: 'تو یک دستیار فارسی هستی. کوتاه، محاوره ای و واضح جواب بده. ایموجی نگذار.' }\n  ];\n}\n\nconst hist = data.sessions[session_id];\nhist.push({ role: 'user', content: text });\nwhile (hist.length > 21) hist.splice(1, hist.length - 21);\n\nreturn [{ json: { session_id, voice, want_audio, stt: text, messages: hist } }];\n"
+      },
+      "id": "portfolio-node-4",
+      "name": "Build Memory + Messages (voice)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama:11434/api/chat",
+        "authentication": "none",
+        "sendBody": true,
+        "contentType": "json",
+        "jsonParameters": true,
+        "bodyParametersJson": "={\n  \"model\": \"qwen2.5:7b-instruct\",\n  \"stream\": false,\n  \"messages\": {{$json.messages}}\n}",
+        "options": {
+          "timeout": 120000
+        },
+        "responseFormat": "json"
+      },
+      "id": "portfolio-node-5",
+      "name": "Ollama Chat (voice)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1120,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst data = this.getWorkflowStaticData('global');\nif (!data.sessions) data.sessions = {};\n\nconst prev = $input.first().json;\nconst answer = ($json.message?.content || '').trim();\n\nconst hist = data.sessions[prev.session_id] || [{ role: 'system', content: 'تو یک دستیار فارسی هستی.' }];\nhist.push({ role: 'assistant', content: answer });\nwhile (hist.length > 21) hist.splice(1, hist.length - 21);\n\nreturn [{ json: { session_id: prev.session_id, stt: prev.stt, answer, voice: prev.voice, want_audio: prev.want_audio } }];\n"
+      },
+      "id": "portfolio-node-6",
+      "name": "Save Memory + Extract Answer (voice)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.want_audio}}",
+              "operation": "isTrue"
+            }
+          ]
+        }
+      },
+      "id": "portfolio-node-7",
+      "name": "IF want_audio (voice)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://voicebot:8000/api/tts?fmt=webm_opus",
+        "sendBody": true,
+        "contentType": "json",
+        "jsonParameters": true,
+        "bodyParametersJson": "={\n  \"text\": {{$json.answer}},\n  \"voice\": {{$json.voice}}\n}",
+        "options": {
+          "timeout": 120000
+        },
+        "responseFormat": "file",
+        "outputPropertyName": "tts"
+      },
+      "id": "portfolio-node-8",
+      "name": "TTS (voice)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1780,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://voicebot:8000/media/store?ext=webm",
+        "sendBody": true,
+        "contentType": "raw",
+        "sendBinaryData": true,
+        "binaryPropertyName": "tts",
+        "options": {
+          "timeout": 120000
+        },
+        "responseFormat": "json"
+      },
+      "id": "portfolio-node-9",
+      "name": "Store Media (voice)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        2000,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "string": [
+            {
+              "name": "session_id",
+              "value": "={{$node['Save Memory + Extract Answer (voice)'].json.session_id}}"
+            },
+            {
+              "name": "stt",
+              "value": "={{$node['Save Memory + Extract Answer (voice)'].json.stt}}"
+            },
+            {
+              "name": "answer",
+              "value": "={{$node['Save Memory + Extract Answer (voice)'].json.answer}}"
+            },
+            {
+              "name": "audio_url",
+              "value": "={{$json.audio_url}}"
+            },
+            {
+              "name": "audio_full_url",
+              "value": "={{$json.audio_full_url}}"
+            }
+          ]
+        }
+      },
+      "id": "portfolio-node-10",
+      "name": "Build Response (voice + audio)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [
+        2220,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "options": {}
+      },
+      "id": "portfolio-node-11",
+      "name": "Respond Voice (json)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        2440,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"session_id\": {{$json.session_id}},\n  \"stt\": {{$json.stt}},\n  \"answer\": {{$json.answer}}\n}",
+        "options": {}
+      },
+      "id": "portfolio-node-12",
+      "name": "Respond Voice (text only)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1780,
+        740
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Voice": {
+      "main": [
+        [
+          {
+            "node": "Normalize Voice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Voice": {
+      "main": [
+        [
+          {
+            "node": "STT (Whisper.cpp)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "STT (Whisper.cpp)": {
+      "main": [
+        [
+          {
+            "node": "Build Memory + Messages (voice)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Memory + Messages (voice)": {
+      "main": [
+        [
+          {
+            "node": "Ollama Chat (voice)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama Chat (voice)": {
+      "main": [
+        [
+          {
+            "node": "Save Memory + Extract Answer (voice)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Memory + Extract Answer (voice)": {
+      "main": [
+        [
+          {
+            "node": "IF want_audio (voice)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF want_audio (voice)": {
+      "main": [
+        [
+          {
+            "node": "TTS (voice)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Voice (text only)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TTS (voice)": {
+      "main": [
+        [
+          {
+            "node": "Store Media (voice)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Media (voice)": {
+      "main": [
+        [
+          {
+            "node": "Build Response (voice + audio)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Response (voice + audio)": {
+      "main": [
+        [
+          {
+            "node": "Respond Voice (json)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
