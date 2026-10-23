@@ -1,5 +1,10 @@
 # Persian Voicebot
 
+<!-- project-contact:start -->
+**Work with Yosof Omrani:** [Email a project inquiry](mailto:aliomrani916@gmail.com) · **aliomrani916@gmail.com** · [Services & contact](https://ali771025.github.io/software-portfolio/en/contact/) · [Portfolio walkthrough](https://ali771025.github.io/software-portfolio/en/#projects)
+<!-- project-contact:end -->
+
+
 ![Source architecture illustration](docs/architecture.svg)
 
 Speech and text assistant integration with local model services and workflow automation
